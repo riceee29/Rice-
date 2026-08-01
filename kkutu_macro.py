@@ -1,24 +1,61 @@
 import os
 import re
 import time
-import threading
-from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+import subprocess
+import sys
+
+# --- 자동 라이브러리 설치 로직 ---
+def install_dependencies():
+    required = ['selenium']
+    for package in required:
+        try:
+            __import__(package)
+        except ImportError:
+            print(f"[*] Installing {package}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# 프로그램 시작 시 의존성 설치 확인
+install_dependencies()
+
+# 설치 후 임포트
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'kkutu_rice_pro_secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+# --- 콘솔 색상 정의 ---
+class Color:
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    DARKCYAN = '\033[36m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+# --- 무지개 배너 출력 함수 ---
+def print_rainbow_banner():
+    banner_lines = [
+        r"    ██████╗ ██╗ ██████╗███████╗    ██████╗ ██████╗  ██████╗ ",
+        r"    ██╔══██╗██║██╔════╝██╔════╝    ██╔══██╗██╔══██╗██╔═══██╗",
+        r"    ██████╔╝██║██║     █████╗      ██████╔╝██████╔╝██║   ██║",
+        r"    ██╔══██╗██║██║     ██╔══╝      ██╔═══╝ ██╔══██╗██║   ██║",
+        r"    ██║  ██║██║╚██████╗███████╗    ██║     ██║  ██║╚██████╔╝",
+        r"    ╚═╝  ╚═╝╚═╝ ╚═════╝╚══════╝    ╚═╝     ╚═╝  ╚═╝ ╚═════╝ "
+    ]
+    colors = [Color.RED, Color.YELLOW, Color.GREEN, Color.CYAN, Color.BLUE, Color.PURPLE]
+    
+    for i, line in enumerate(banner_lines):
+        print(colors[i % len(colors)] + line + Color.END)
 
 # --- 글로벌 상태 관리 ---
 BOT_STATE = {
-    "running": False,
+    "running": True,
     "delay": 0.4,
-    "dict_file": "dictionary.txt",
-    "status_msg": "대기 중"
+    "dict_file": "dictionary.txt"
 }
 
 ko_map, en_map = {}, {}
@@ -39,9 +76,18 @@ DUUM_RULES = {
     "례":"예", "린":"인", "림":"임", "립":"입"
 }
 
-# --- 로깅 함수 ---
-def send_log(message, log_type="info"):
-    socketio.emit('log', {'msg': message, 'type': log_type})
+def log(msg, tag="INFO"):
+    tag_colors = {
+        "INFO": Color.CYAN,
+        "SYSTEM": Color.GREEN,
+        "GAME": Color.PURPLE,
+        "LEARN": Color.YELLOW,
+        "INPUT": Color.BLUE,
+        "WARN": Color.RED,
+        "ERROR": Color.BOLD + Color.RED
+    }
+    color = tag_colors.get(tag, Color.END)
+    print(f"{color}[{tag}]{Color.END} {msg}")
 
 # --- 사전 관리 로직 ---
 def update_memory(word):
@@ -96,8 +142,7 @@ def save_learned_word(word, source="LEARNED"):
         if update_memory(clean_word):
             with open(BOT_STATE["dict_file"], "a", encoding="utf-8") as f:
                 f.write(f"{len(clean_word)}\t{clean_word}\t[{source}]\n")
-            send_log(f"새 단어 학습 완료 ({source}): {clean_word}", "success")
-            socketio.emit('dict_updated', {'count': len(all_word_set)})
+            log(f"New word learned ({source}): {clean_word}", "LEARN")
             return True
     except Exception:
         pass
@@ -152,11 +197,10 @@ def macro_worker():
     try:
         driver = webdriver.Edge(options=options)
         driver.get("https://kkutu.kr/play")
-        send_log("Edge 브라우저가 실행되었습니다. 로그인 후 방에 입장해주세요.", "info")
+        log("Edge browser started. Please log in and enter a room.", "SYSTEM")
     except Exception as e:
-        send_log(f"브라우저 실행 중 오류 발생: {e}", "error")
+        log(f"Error starting browser: {e}", "ERROR")
         BOT_STATE["running"] = False
-        socketio.emit('status_change', {'running': False})
         return
 
     last_round_id, idx, stop_round, my_last_word = "", 0, False, ""
@@ -178,7 +222,7 @@ def macro_worker():
             current_char = raw_text[0]
 
             if last_round_id != current_char:
-                send_log(f"내 차례 감지! 제시어: [{raw_text}]", "warn")
+                log(f"My turn! Target char: [{raw_text}]", "GAME")
                 last_round_id, idx, stop_round = current_char, 0, False
 
             if stop_round: 
@@ -200,18 +244,18 @@ def macro_worker():
                 input_box.send_keys(target)
                 input_box.send_keys(Keys.ENTER)
                 
-                send_log(f"단어 입력 시도: {target} (딜레이: {BOT_STATE['delay']}초)", "info")
+                log(f"Inputting: {target} (Delay: {BOT_STATE['delay']}s)", "INPUT")
                 time.sleep(BOT_STATE["delay"])
 
                 fb = check_feedback(driver)
                 if fb == "SKIP":
-                    send_log(f"입력 거부됨(무효/금지어 등): {target} -> 다음 단어 탐색", "error")
+                    log(f"Rejected: {target} -> Trying next word", "WARN")
                     idx += 1 
                 else:
                     my_last_word = target 
             else:
                 if not stop_round:
-                    send_log("사용 가능한 단어를 모두 소모했습니다.", "error")
+                    log("No words left for this character.", "WARN")
                     stop_round = True
         except Exception:
             pass
@@ -222,53 +266,21 @@ def macro_worker():
         driver.quit()
     except Exception:
         pass
-    send_log("매크로 엔진이 정지되었습니다.", "warn")
+    log("Macro engine stopped.", "SYSTEM")
 
-# --- Flask 라우트 & API ---
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/api/words', methods=['GET'])
-def get_words():
-    query = request.args.get('search', '').strip()
-    words = sorted(list(all_word_set), key=lambda x: (len(x), x), reverse=True)
-    if query:
-        words = [w for w in words if query in w]
-    return jsonify({"count": len(words), "words": words[:500]}) # 최대 500개 표시
-
-@app.route('/api/words/add', methods=['POST'])
-def add_words():
-    data = request.json
-    text = data.get('words', '')
-    words = text.split()
-    added = 0
-    for w in words:
-        if save_learned_word(w, source="MANUAL"):
-            added += 1
-    return jsonify({"success": True, "added": added, "total": len(all_word_set)})
-
-@app.route('/api/settings', methods=['POST'])
-def update_settings():
-    data = request.json
-    if 'delay' in data:
-        BOT_STATE['delay'] = max(0.05, float(data['delay']))
-        send_log(f"응답 딜레이 변경됨: {BOT_STATE['delay']}초", "info")
-    return jsonify({"success": True, "delay": BOT_STATE['delay']})
-
-# --- SocketIO 이벤트 ---
-@socketio.on('toggle_bot')
-def handle_toggle_bot(data):
-    target_state = data.get('run', False)
-    if target_state and not BOT_STATE["running"]:
-        BOT_STATE["running"] = True
-        threading.Thread(target=macro_worker, daemon=True).start()
-        emit('status_change', {'running': True})
-    elif not target_state and BOT_STATE["running"]:
-        BOT_STATE["running"] = False
-        emit('status_change', {'running': False})
-
+# --- 메인 실행부 ---
 if __name__ == '__main__':
-    load_dict()
-    print(">> Rice Pro Web Controller 가동 시작: http://localhost:5000")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    # 1. 무지개 로고 출력
+    print_rainbow_banner()
+    
+    # 2. 사전 데이터 로드
+    total_words = load_dict()
+    print(f"{Color.GREEN}>> Dictionary loaded! Total words: {total_words}{Color.END}\n")
+    print(f"{Color.YELLOW}>> Press Ctrl + C to exit.{Color.END}\n")
+    
+    # 3. 매크로 쓰레드 실행
+    try:
+        macro_worker()
+    except KeyboardInterrupt:
+        print(f"\n{Color.RED}>> Terminated by user.{Color.END}")
+        BOT_STATE["running"] = False
