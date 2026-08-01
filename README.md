@@ -7,7 +7,7 @@ Auto Kkutu https://kkutu.kr/
 
 ---
 
-```pip install flask flask-socketio selenium keyboard colorama```
+```pip install -r requirements.txt```
 
 ---
 
